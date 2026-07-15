@@ -1,0 +1,16 @@
+{
+  "name": "maca-aksara",
+  "version": "1.0.0",
+  "description": "Aplikasi Pembaca & Terjemahan Aksara Jawa",
+  "main": "backend/main.py",
+  "scripts": {
+    "dev": "node dev.js"
+  },
+  "keywords": [
+    "aksara-jawa",
+    "ocr",
+    "translator"
+  ],
+  "author": "MacaAksara Team",
+  "license": "MIT"
+}
