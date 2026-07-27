@@ -47,23 +47,53 @@ if (fs.existsSync(requirementsFile)) {
 }
 
 // 4. Check for model weights
-const modelWeights = path.join(__dirname, 'backend', 'best_model.pth');
+const modelWeights = path.join(__dirname, 'backend', 'app', 'models', 'best_model.pth');
 if (!fs.existsSync(modelWeights)) {
   console.log('\n===================================================');
-  console.log('[WARNING] Model weights file (backend/best_model.pth) is missing.');
+  console.log('[WARNING] Model weights file (backend/app/models/best_model.pth) is missing.');
   console.log('You must train the model for Local OCR mode to function.');
   console.log('You can do this by running the training process automatically');
   console.log('via the web dashboard AI section.');
   console.log('===================================================\n');
 }
 
-// 5. Start FastAPI Server
+// 5. Start FastAPI Backend & Vite Frontend Concurrently
 console.log('[INFO] Starting FastAPI server on http://localhost:8000 ...');
-console.log('[INFO] Press Ctrl+C to stop the server.');
+console.log('[INFO] Starting Vite React dev server on http://localhost:5173 ...');
+console.log('[INFO] Press Ctrl+C to stop both servers.');
 console.log('');
 
-const child = spawn(venvPython, ['backend/main.py'], { stdio: 'inherit' });
+const uvicornPath = path.join(__dirname, '.venv', 'Scripts', 'uvicorn.exe');
+const backend = spawn(uvicornPath, ['backend.app.main:app', '--host', '0.0.0.0', '--port', '8000'], { stdio: 'inherit', shell: isWindows });
 
-child.on('close', (code) => {
+const npmCmd = isWindows ? 'npm.cmd' : 'npm';
+const frontend = spawn(npmCmd, ['run', 'dev'], { 
+  cwd: path.join(__dirname, 'frontend'), 
+  stdio: 'inherit',
+  shell: isWindows
+});
+
+// Close helper
+function cleanup() {
+  try { backend.kill(); } catch(e){}
+  try { frontend.kill(); } catch(e){}
+}
+
+process.on('SIGINT', () => {
+  cleanup();
+  process.exit(0);
+});
+
+process.on('exit', () => {
+  cleanup();
+});
+
+backend.on('close', (code) => {
+  cleanup();
+  process.exit(code);
+});
+
+frontend.on('close', (code) => {
+  cleanup();
   process.exit(code);
 });

@@ -9,10 +9,12 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 import unicodedata
-from model import JavaneseCNN
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from backend.app.models.classifier import JavaneseCNN
 
 # Global Component Lists
-BASES = ['ba', 'ca', 'da', 'dha', 'ga', 'ha', 'ja', 'ka', 'la', 'ma', 'na', 'nga', 'nya', 'pa', 'ra', 'sa', 'ta', 'tha', 'wa', 'ya']
+BASES = ['ba', 'ca', 'da', 'dha', 'ga', 'ha', 'ja', 'ka', 'la', 'ma', 'na', 'nga', 'nya', 'pa', 'ra', 'sa', 'ta', 'tha', 'wa', 'ya', 'pangkon']
 VOWELS = ['a', 'e', 'i', 'o', 'u', 'è']
 FINALS = ['none', 'h', 'ng', 'r']
 
@@ -92,6 +94,109 @@ def find_dataset_zip():
                     pass
     return None
 
+class JavaneseFolderDataset(Dataset):
+    def __init__(self, dataset_dir, is_train=True, transform=None):
+        self.transform = transform
+        self.is_train = is_train
+        self.samples = []
+        self.cache = {}
+        
+        split_folder = "train" if is_train else "val"
+        split_dir = os.path.join(dataset_dir, split_folder)
+        
+        print(f"Initializing dataset paths from folder: {split_dir}")
+        
+        # Get list of classes
+        self.classes = sorted([d for d in os.listdir(split_dir) if os.path.isdir(os.path.join(split_dir, d))])
+        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
+        
+        for cls_name in self.classes:
+            cls_dir = os.path.join(split_dir, cls_name)
+            
+            # Parse Javanese syllable into base, vowel, final components
+            base, vowel, final = parse_syllable(cls_name)
+            try:
+                base_idx = BASES.index(base)
+                vowel_idx = VOWELS.index(vowel)
+                final_idx = FINALS.index(final)
+            except ValueError:
+                continue
+                
+            for filename in os.listdir(cls_dir):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    img_path = os.path.join(cls_dir, filename)
+                    self.samples.append((img_path, base_idx, vowel_idx, final_idx))
+                        
+        print(f"Registered {len(self.samples)} image samples.")
+        
+    def __len__(self):
+        return len(self.samples)
+        
+    def __getitem__(self, idx):
+        img_path, base_idx, vowel_idx, final_idx = self.samples[idx]
+        if idx in self.cache:
+            img = self.cache[idx]
+        else:
+            try:
+                img = Image.open(img_path).convert("L")
+                img = img.resize((64, 64), Image.Resampling.BILINEAR)
+                self.cache[idx] = img
+            except Exception:
+                img = Image.new("L", (64, 64), 255)
+            
+        if self.transform:
+            img = self.transform(img)
+            
+        return img, base_idx, vowel_idx, final_idx
+
+class JavaneseSyntheticDataset(Dataset):
+    def __init__(self, dataset_dir, transform=None):
+        self.transform = transform
+        self.samples = []
+        self.cache = {}
+        
+        if not os.path.exists(dataset_dir):
+            print(f"[WARNING] Synthetic dataset directory does not exist: {dataset_dir}")
+            return
+            
+        print(f"Loading synthetic dataset path list from: {dataset_dir}")
+        for filename in os.listdir(dataset_dir):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                parts = filename.split("_")
+                if len(parts) >= 3:
+                    base = parts[0]
+                    vowel = parts[1]
+                    final = parts[2]
+                    
+                    if base in BASES and vowel in VOWELS and final in FINALS:
+                        base_idx = BASES.index(base)
+                        vowel_idx = VOWELS.index(vowel)
+                        final_idx = FINALS.index(final)
+                        img_path = os.path.join(dataset_dir, filename)
+                        self.samples.append((img_path, base_idx, vowel_idx, final_idx))
+                            
+        print(f"Registered {len(self.samples)} synthetic image samples on-the-fly.")
+        
+    def __len__(self):
+        return len(self.samples)
+        
+    def __getitem__(self, idx):
+        img_path, base_idx, vowel_idx, final_idx = self.samples[idx]
+        if idx in self.cache:
+            img = self.cache[idx]
+        else:
+            try:
+                img = Image.open(img_path).convert("L")
+                img = img.resize((64, 64), Image.Resampling.BILINEAR)
+                self.cache[idx] = img
+            except Exception:
+                img = Image.new("L", (64, 64), 255)
+            
+        if self.transform:
+            img = self.transform(img)
+            
+        return img, base_idx, vowel_idx, final_idx
+
 class JavaneseZipDataset(Dataset):
     def __init__(self, zip_path, is_train=True, transform=None):
         self.transform = transform
@@ -168,7 +273,7 @@ class JavaneseZipDataset(Dataset):
         return img, base_idx, vowel_idx, final_idx
 
 def save_progress(status, epoch=0, total_epochs=0, batch=0, total_batches=0, loss=0.0, train_acc=0.0, val_acc=0.0, best_acc=0.0, error=None):
-    progress_file = os.path.join(os.path.dirname(__file__), "training_progress.json")
+    progress_file = "D:/MacaAksara/backend/training_progress.json"
     data = {
         "status": status,
         "epoch": epoch,
@@ -187,15 +292,11 @@ def save_progress(status, epoch=0, total_epochs=0, batch=0, total_batches=0, los
 def train_model(epochs=8, batch_size=64, learning_rate=0.001):
     try:
         save_progress("initializing", total_epochs=epochs)
-        zip_path = find_dataset_zip()
-        if not zip_path:
-            raise FileNotFoundError("Could not find Javanese script dataset zip.")
-            
-        print(f"Using dataset zip: {zip_path}")
         
-        # Note: Since images are pre-loaded in memory, they are already resized to 64x64.
+        # Setup transformation pipelines
         train_transform = transforms.Compose([
             transforms.RandomRotation(10),
+            transforms.RandomAffine(degrees=8, translate=(0.06, 0.06), scale=(0.94, 1.06)),
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,))
         ])
@@ -205,17 +306,44 @@ def train_model(epochs=8, batch_size=64, learning_rate=0.001):
             transforms.Normalize((0.5,), (0.5,))
         ])
         
-        train_dataset = JavaneseZipDataset(zip_path, is_train=True, transform=train_transform)
-        test_dataset = JavaneseZipDataset(zip_path, is_train=False, transform=test_transform)
+        # Check if extracted dataset directory exists
+        backend_dir = os.path.dirname(__file__)
+        extracted_dir = os.path.join(os.path.dirname(backend_dir), "dataset", "aksara_jawa_kombinasi_sandangan", "aksara_jawa_kombinasi_sandangan")
+        if not os.path.exists(extracted_dir):
+            extracted_dir = "dataset/aksara_jawa_kombinasi_sandangan/aksara_jawa_kombinasi_sandangan"
+            
+        # Load synthetic dataset too
+        synthetic_dir = os.path.join(backend_dir, "dataset")
+        train_synthetic = JavaneseSyntheticDataset(synthetic_dir, transform=train_transform)
+        
+        if os.path.exists(extracted_dir):
+            print(f"Using extracted dataset folder: {extracted_dir}")
+            train_handwritten = JavaneseFolderDataset(extracted_dir, is_train=True, transform=train_transform)
+            test_dataset = JavaneseFolderDataset(extracted_dir, is_train=False, transform=test_transform)
+        else:
+            zip_path = find_dataset_zip()
+            if not zip_path:
+                raise FileNotFoundError("Could not find Javanese script dataset zip or extracted folder.")
+            print(f"Using dataset zip: {zip_path}")
+            train_handwritten = JavaneseZipDataset(zip_path, is_train=True, transform=train_transform)
+            test_dataset = JavaneseZipDataset(zip_path, is_train=False, transform=test_transform)
+            
+        # Combine them using ConcatDataset
+        from torch.utils.data import ConcatDataset
+        train_dataset = ConcatDataset([train_handwritten, train_synthetic])
+        print(f"Combined Training Dataset has {len(train_dataset)} samples.")
         
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
+        # Determine model save path folder
+        models_dir = "D:/MacaAksara/backend/app/models"
+            
         # Save classes and components mapping to classes.json
-        classes_file = os.path.join(os.path.dirname(__file__), "classes.json")
+        classes_file = os.path.join(models_dir, "classes.json")
         with open(classes_file, "w") as f:
             json.dump({
-                "classes": train_dataset.classes,
+                "classes": train_handwritten.classes if hasattr(train_handwritten, "classes") else [],
                 "bases": BASES,
                 "vowels": VOWELS,
                 "finals": FINALS
@@ -231,7 +359,7 @@ def train_model(epochs=8, batch_size=64, learning_rate=0.001):
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
         
         best_acc = 0.0
-        model_save_path = os.path.join(os.path.dirname(__file__), "best_model.pth")
+        model_save_path = os.path.join(models_dir, "best_model.pth")
         
         save_progress("training", epoch=0, total_epochs=epochs, total_batches=len(train_loader))
         import time
@@ -347,4 +475,4 @@ def train_model(epochs=8, batch_size=64, learning_rate=0.001):
         raise e
 
 if __name__ == "__main__":
-    train_model(epochs=5, batch_size=128)
+    train_model(epochs=3, batch_size=256)
